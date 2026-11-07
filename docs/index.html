@@ -190,7 +190,7 @@ $('#del').onclick = async () => {
 let counts = { o: 0, b: 0 }; const staged = []; let uploading = false, aiBusy = false;
 // 瀏覽器內 AI 去背：Transformers.js + MODNet（Apache-2.0）。照片不會上傳，只有模型檔從網路下載（之後存在瀏覽器快取）。
 // MODNet 是人像去背模型；要換模型只需改這裡。
-const AI = { ver: '3.8.1', ai: { name: 'AI 人像', model: 'Xenova/modnet', dtype: 'fp32', mb: '約 25 MB' }, ai2: { name: 'AI 通用', model: 'onnx-community/ISNet-ONNX', dtype: 'int8', mb: '約 45 MB' } };
+const AI = { ver: '3.8.1', ai: { name: 'AI 人像', model: 'Xenova/modnet', dtype: 'fp32', mb: '約 25 MB' }, ai2: { name: 'AI 通用', model: 'onnx-community/ISNet-ONNX', dtype: ['uint8', 'q8', 'fp16'], mb: '約 45 MB' } };
 const isAI = m => m === 'ai' || m === 'ai2', curMode = () => $('#mode').value;
 
 function outline(img, color, r) {
@@ -249,7 +249,12 @@ function getSeg(kind) { // 第一次使用才載入程式庫與模型；回傳 a
         bar('下載 ' + cfg.name + ' 模型… ' + Math.round(lo / to * 100) + '%（只需下載一次）', lo / to);
       }
     };
-    const pipe = await T.pipeline('background-removal', cfg.model, { dtype: cfg.dtype, progress_callback });
+    let pipe, err; // dtype 可列多個：依序嘗試，模型庫沒有該精度的檔案時換下一個
+    for (const dtype of [].concat(cfg.dtype)) {
+      try { pipe = await T.pipeline('background-removal', cfg.model, { dtype, progress_callback }); break; }
+      catch (e) { err = e; console.warn(cfg.name + ' 模型載入失敗（dtype=' + dtype + '），改試下一個', e); }
+    }
+    if (!pipe) throw err;
     return async (url, w, h) => { const out = await pipe(url); return alphaOf(Array.isArray(out) ? out[0] : out, w, h); };
   })().catch(e => { delete segPs[kind]; throw e; });
   return segPs[kind];

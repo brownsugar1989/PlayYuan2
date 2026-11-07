@@ -221,15 +221,44 @@ function autoPx(p) { // 不含手動修飾的自動結果
   else if (mode === 'key') tag = keyOut(px, w, h) ? '簡易去背' : '未去背';
   return { px, tag };
 }
-function proc(p) { // 套用去背／修飾結果，並裁掉透明邊
+function cleanBox(px, w, h) { // 去掉零星小碎塊（只保留夠大的主體區塊），回傳主體範圍 [x0,y0,x1,y1]；找不到回傳 null
+  const n = w * h, lab = new Int32Array(n), sz = [0], st = []; let L = 0;
+  for (let s = 0; s < n; s++) {
+    if (lab[s] || px[s * 4 + 3] <= 96) continue;
+    L++; let c = 0; lab[s] = L; st.push(s);
+    while (st.length) {
+      const i = st.pop(), x = i % w; c++;
+      if (x > 0 && !lab[i - 1] && px[(i - 1) * 4 + 3] > 96) { lab[i - 1] = L; st.push(i - 1); }
+      if (x < w - 1 && !lab[i + 1] && px[(i + 1) * 4 + 3] > 96) { lab[i + 1] = L; st.push(i + 1); }
+      if (i >= w && !lab[i - w] && px[(i - w) * 4 + 3] > 96) { lab[i - w] = L; st.push(i - w); }
+      if (i < n - w && !lab[i + w] && px[(i + w) * 4 + 3] > 96) { lab[i + w] = L; st.push(i + w); }
+    }
+    sz.push(c);
+  }
+  if (!L) return null; let mx = 0; for (const c of sz) if (c > mx) mx = c;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let i = 0; i < n; i++) {
+    const l = lab[i]; if (!l) continue;
+    if (sz[l] < mx * .03) { px[i * 4 + 3] = 0; continue; } // 小碎塊：清掉
+    const x = i % w, y = (i - x) / w; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  const m = 2; return [Math.max(0, x0 - m), Math.max(0, y0 - m), Math.min(w - 1, x1 + m), Math.min(h - 1, y1 + m)];
+}
+const TARGET = 400; // 每個物件統一縮放到最長邊 400px（放進正方形），遊戲裡大小才會差不多
+function proc(p) { // 套用去背／修飾結果 → 去碎塊 → 裁掉透明邊 → 縮放到統一大小（有快取，沒變就不重算）
+  const sig = [curMode(), $('#tol').value, p.ai, p.aiKind, p.manual, p.hasAlpha].map(v => (v && typeof v === 'object') ? (p._o = p._o || new Map()).get(v) || (p._o.set(v, p._o.size + 1), p._o.size) : v).join('|');
+  if (p._sig === sig && p._res) return p._res;
   const w = p.src.width, h = p.src.height; let { px, tag } = autoPx(p);
   if (p.manual) { px = new Uint8ClampedArray(p.src.getContext('2d').getImageData(0, 0, w, h).data); applyMask(px, p.manual); tag = '已修飾'; }
-  let x0 = w, y0 = h, x1 = -1, y1 = -1;
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (px[(y * w + x) * 4 + 3] > 16) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-  if (x1 < 0) return { c: p.src, tag: '沒找到主體' }; // 全被去掉 → 退回原圖
-  const t = document.createElement('canvas'); t.width = w; t.height = h; t.getContext('2d').putImageData(new ImageData(px, w, h), 0, 0);
-  const o = document.createElement('canvas'); o.width = x1 - x0 + 1; o.height = y1 - y0 + 1;
-  o.getContext('2d').drawImage(t, x0, y0, o.width, o.height, 0, 0, o.width, o.height); return { c: o, tag };
+  const box = cleanBox(px, w, h); let res;
+  if (!box) res = { c: p.src, tag: '沒找到主體' }; // 全被去掉 → 退回原圖
+  else {
+    const [x0, y0, x1, y1] = box, cw = x1 - x0 + 1, ch = y1 - y0 + 1, sc = TARGET / Math.max(cw, ch);
+    const t = document.createElement('canvas'); t.width = w; t.height = h; t.getContext('2d').putImageData(new ImageData(px, w, h), 0, 0);
+    const o = document.createElement('canvas'); o.width = Math.max(1, Math.round(cw * sc)); o.height = Math.max(1, Math.round(ch * sc));
+    const g = o.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(t, x0, y0, cw, ch, 0, 0, o.width, o.height); res = { c: o, tag };
+  }
+  p._sig = sig; p._res = res; return res;
 }
 
 // ---- AI 去背 ----
@@ -310,7 +339,7 @@ async function stage(kind, files) {
   if (room <= 0) return say('已達上限。', 1);
   for (const f of files.slice(0, room)) {
     try {
-      const bm = await createImageBitmap(f), s = Math.min(1, 512 / Math.max(bm.width, bm.height)), c = document.createElement('canvas');
+      const bm = await createImageBitmap(f), s = Math.min(1, 768 / Math.max(bm.width, bm.height)), c = document.createElement('canvas');
       c.width = Math.max(1, Math.round(bm.width * s)); c.height = Math.max(1, Math.round(bm.height * s));
       c.getContext('2d').drawImage(bm, 0, 0, c.width, c.height);
       const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let t = 0; for (let i = 3; i < d.length; i += 4) if (d[i] < 250) t++;

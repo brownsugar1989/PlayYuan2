@@ -94,12 +94,13 @@ progress{width:100%;height:10px;accent-color:var(--btn)}
       <div id="aibar" class="hide"><div class="mut" id="aitxt"></div><progress id="aip" max="100"></progress></div>
       <label for="mode" style="margin-top:0">去背方式</label>
       <select id="mode">
-        <option value="ai" selected>AI 自動去背（人像效果最好）</option>
+        <option value="ai" selected>AI 人像去背（快、檔案小）</option>
+        <option value="ai2">AI 通用去背（物品／動物，需下載約 45 MB）</option>
         <option value="key">簡易去背（四個角落同色的純色背景）</option>
         <option value="none">不去背</option>
       </select>
       <div id="tolbox" class="hide"><label class="rng">強度 <input type="range" id="tol" min="10" max="90" value="42" aria-label="去背強度"></label></div>
-      <p class="mut">AI 去背在你的瀏覽器裡執行，照片不會被送去別處；第一次使用要下載約數十 MB 的模型，之後會存在瀏覽器。AI 模型針對人像訓練，物品或動物效果可能較差，可按每張照片的「修飾」用橡皮擦／還原筆刷手動調整。棋盤格代表透明；已有透明背景的 PNG 會直接保留。炸彈的預覽會顯示紅框。</p>
+      <p class="mut">AI 去背在你的瀏覽器裡執行，照片不會被送去別處；第一次使用要下載約數十 MB 的模型，之後會存在瀏覽器。「AI 人像」針對人像訓練；非人像請改選「AI 通用」（手機上第一次下載與處理會比較久）。去背不乾淨可按每張照片的「修飾」用橡皮擦／還原筆刷手動調整。棋盤格代表透明；已有透明背景的 PNG 會直接保留。炸彈的預覽會顯示紅框。</p>
       <button id="go">確認上傳</button> <button id="cancel" class="sec">取消</button>
     </div>
     <button id="del" class="danger">刪除這個遊戲與所有照片</button>
@@ -189,7 +190,8 @@ $('#del').onclick = async () => {
 let counts = { o: 0, b: 0 }; const staged = []; let uploading = false, aiBusy = false;
 // 瀏覽器內 AI 去背：Transformers.js + MODNet（Apache-2.0）。照片不會上傳，只有模型檔從網路下載（之後存在瀏覽器快取）。
 // MODNet 是人像去背模型；要換模型只需改這裡。
-const AI = { ver: '3.8.1', model: 'Xenova/modnet' };
+const AI = { ver: '3.8.1', ai: { name: 'AI 人像', model: 'Xenova/modnet', dtype: 'fp32', mb: '約 25 MB' }, ai2: { name: 'AI 通用', model: 'onnx-community/ISNet-ONNX', dtype: 'int8', mb: '約 45 MB' } };
+const isAI = m => m === 'ai' || m === 'ai2', curMode = () => $('#mode').value;
 
 function outline(img, color, r) {
   const c = document.createElement('canvas'); c.width = img.width + r * 2; c.height = img.height + r * 2; const g = c.getContext('2d');
@@ -215,7 +217,7 @@ function keyOut(px, w, h) { // 簡易去背：四角同色時，從邊緣向內�
 function autoPx(p) { // 不含手動修飾的自動結果
   const w = p.src.width, h = p.src.height, px = new Uint8ClampedArray(p.src.getContext('2d').getImageData(0, 0, w, h).data), mode = $('#mode').value; let tag = '';
   if (p.hasAlpha) tag = '透明背景';
-  else if (mode === 'ai') { if (p.ai) { applyMask(px, p.ai); tag = 'AI 去背'; } else tag = p.aiState === 'fail' ? '去背失敗' : '等待去背'; }
+  else if (isAI(mode)) { if (p.ai && p.aiKind === mode) { applyMask(px, p.ai); tag = AI[mode].name + '去背'; } else tag = p.aiState === 'fail' ? '去背失敗' : '等待去背'; }
   else if (mode === 'key') tag = keyOut(px, w, h) ? '簡易去背' : '未去背';
   return { px, tag };
 }
@@ -235,20 +237,22 @@ function bar(txt, frac) { // 進度列；frac 省略 = 不確定進度；沒有�
   const b = $('#aibar'); if (!txt) return b.classList.add('hide');
   b.classList.remove('hide'); $('#aitxt').textContent = txt; const p = $('#aip'); if (frac == null) p.removeAttribute('value'); else p.value = frac * 100;
 }
-let segP = null;
-function getSeg() { // 第一次使用才載入程式庫與模型
-  if (!segP) segP = (async () => {
-    bar('準備 AI 去背…（第一次需下載模型，之後會存在瀏覽器裡）');
-    const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@' + AI.ver);
-    const files = {};
-    return await pipeline('background-removal', AI.model, { dtype: 'fp32', progress_callback: e => {
+const segPs = {};
+function getSeg(kind) { // 第一次使用才載入程式庫與模型；回傳 async (url) => 與原圖同尺寸的 alpha 遮罩
+  const cfg = AI[kind];
+  if (!segPs[kind]) segPs[kind] = (async () => {
+    bar('準備 ' + cfg.name + ' 去背…（第一次需下載模型 ' + cfg.mb + '，之後會存在瀏覽器裡）');
+    const T = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@' + AI.ver), files = {};
+    const progress_callback = e => {
       if (e.status === 'progress' && e.total) {
         files[e.file] = [e.loaded, e.total]; let lo = 0, to = 0; for (const v of Object.values(files)) { lo += v[0]; to += v[1]; }
-        bar('下載 AI 去背模型… ' + Math.round(lo / to * 100) + '%（只需下載一次）', lo / to);
+        bar('下載 ' + cfg.name + ' 模型… ' + Math.round(lo / to * 100) + '%（只需下載一次）', lo / to);
       }
-    } });
-  })().catch(e => { segP = null; throw e; });
-  return segP;
+    };
+    const pipe = await T.pipeline('background-removal', cfg.model, { dtype: cfg.dtype, progress_callback });
+    return async (url, w, h) => { const out = await pipe(url); return alphaOf(Array.isArray(out) ? out[0] : out, w, h); };
+  })().catch(e => { delete segPs[kind]; throw e; });
+  return segPs[kind];
 }
 function alphaOf(img, w, h) { // 模型輸出（RGBA 或單通道遮罩）→ 與原圖同尺寸的 alpha 遮罩
   const n = img.width * img.height, ch = img.channels || Math.round(img.data.length / n), id = new ImageData(img.width, img.height);
@@ -261,24 +265,24 @@ function alphaOf(img, w, h) { // 模型輸出（RGBA 或單通道遮罩）→ �
 }
 async function runAI(seg, p) {
   const blob = await new Promise(r => p.src.toBlob(r, 'image/png')), url = URL.createObjectURL(blob);
-  try { const out = await seg(url); return alphaOf(Array.isArray(out) ? out[0] : out, p.src.width, p.src.height); }
+  try { return await seg(url, p.src.width, p.src.height); }
   finally { URL.revokeObjectURL(url); }
 }
-const needAI = p => !p.hasAlpha && !p.manual && !p.ai && p.aiState !== 'fail';
+const needAI = p => !p.hasAlpha && !p.manual && !(p.ai && p.aiKind === curMode()) && p.aiState !== 'fail';
 async function ensureAI() { // 依序處理還沒去背的照片（一次一張，省記憶體）
-  if (aiBusy || $('#mode').value !== 'ai' || !staged.some(needAI)) return;
+  if (aiBusy || !isAI(curMode()) || !staged.some(needAI)) return;
   aiBusy = true; updateGo();
   try {
     let seg;
-    try { seg = await getSeg(); }
+    const kind = curMode(); try { seg = await getSeg(kind); }
     catch (e) { console.error(e); for (const q of staged) if (needAI(q)) q.aiState = 'fail'; return say('AI 去背載入失敗（網路或瀏覽器不支援）。可改用「簡易去背」，或按「修飾」手動去背。', 1); }
-    for (let p; $('#mode').value === 'ai' && (p = staged.find(needAI));) {
-      p.aiState = 'run'; bar('AI 去背中…（剩 ' + staged.filter(needAI).length + ' 張）'); renderStage();
-      try { p.ai = await runAI(seg, p); p.aiState = 'ok'; } catch (e) { console.error(e); p.aiState = 'fail'; say('有一張照片去背失敗，可按「修飾」手動處理。', 1); }
+    for (let p; curMode() === kind && (p = staged.find(needAI));) {
+      p.aiState = 'run'; bar(AI[kind].name + ' 去背中…（剩 ' + staged.filter(needAI).length + ' 張）'); renderStage();
+      try { p.ai = await runAI(seg, p); p.aiKind = kind; p.aiState = 'ok'; } catch (e) { console.error(e); p.aiState = 'fail'; say('有一張照片去背失敗，可按「修飾」手動處理。', 1); }
     }
-  } finally { aiBusy = false; bar(); renderStage(); }
+  } finally { aiBusy = false; bar(); renderStage(); if (isAI(curMode()) && staged.some(needAI)) ensureAI(); }
 }
-function updateGo() { $('#go').disabled = uploading || aiBusy || !staged.length || ($('#mode').value === 'ai' && staged.some(needAI)); }
+function updateGo() { $('#go').disabled = uploading || aiBusy || !staged.length || (isAI(curMode()) && staged.some(needAI)); }
 
 function renderStage() {
   const box = $('#sg'); box.textContent = ''; $('#stage').classList.toggle('hide', !staged.length);

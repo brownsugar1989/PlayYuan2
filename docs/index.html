@@ -29,12 +29,19 @@ button:focus-visible,.btn:focus-within,input:focus-visible{outline:3px solid var
 .mut{color:var(--mut);font-size:14px;margin:6px 0}
 .warn{background:#5a2b2f;border:2px solid var(--red);border-radius:12px;padding:10px 12px;font-size:14px;margin:12px 0}
 .hide{display:none}
+.tn.big{width:104px;height:104px;background:repeating-conic-gradient(#ffffff1f 0 25%,#0000 0 50%) 0 0/16px 16px}
+.tn .tag{position:absolute;left:0;right:0;bottom:0;font-size:11px;text-align:center;background:#000a;border-radius:0 0 12px 12px;padding:1px 2px}
+.tn .st{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;background:#000b;border-radius:12px;opacity:0}
+.tn .st:not(:empty){opacity:1}
+.rng{display:flex;align-items:center;gap:10px;margin:8px 0}.rng input{flex:1}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);max-width:92vw;background:var(--card);border:2px solid var(--btn);border-radius:12px;padding:10px 16px;z-index:9;box-shadow:0 4px 0 var(--edge)}
+.toast.bad{border-color:var(--red);background:#5a2b2f}
 </style>
 </head>
 <body>
 <main>
   <h1 data-name></h1>
-  <p class="mut">你的朋友，由你切片。用自己的照片做一個切水果遊戲，再把連結分享給朋友玩。</p>
+  <p class="mut">你的朋友 由你切片。用自己的照片做一個切水果遊戲，再把連結分享給朋友玩。</p>
   <div id="msg"></div>
 
   <section id="newG" class="card hide">
@@ -48,9 +55,11 @@ button:focus-visible,.btn:focus-within,input:focus-visible{outline:3px solid var
   <section id="game" class="hide">
     <div class="card">
       <h2 id="gt"></h2>
+      <p class="mut">① 上傳照片　② 預覽確認　③ 複製遊玩連結，分享給朋友</p>
       <div class="warn">管理連結就是你的鑰匙，請自行收藏（或填 Email）。遺失就無法再修改或刪除這個遊戲。</div>
       <div class="mut">遊玩連結（給朋友）</div>
       <div class="link"><input id="pl" readonly><button id="cpl">複製</button></div>
+      <div class="mut" id="plhint"></div>
       <div class="mut">管理連結（只給自己）</div>
       <div class="link"><input id="ml" readonly><button id="cml">複製</button></div>
       <div class="mut" id="exp"></div>
@@ -67,9 +76,13 @@ button:focus-visible,.btn:focus-within,input:focus-visible{outline:3px solid var
       <label class="btn" id="add2">＋新增照片<input id="f2" type="file" accept="image/*" multiple hidden></label>
       <p class="mut">沒有上傳炸彈時使用預設炸彈。遊戲會自動為炸彈加上粗紅框。</p>
     </div>
-    <div class="card">
+    <div class="card hide" id="stage">
+      <h2>預覽（確認後才會上傳）</h2>
+      <div id="sg" class="grid"></div>
       <label style="margin:0"><input type="checkbox" id="key"> 簡易去背（四個角落同色的純色背景才有效）</label>
-      <p class="mut">已去背的 PNG 會直接保留透明背景。照片先在你的瀏覽器處理好才上傳，只有持有遊玩連結的人在遊玩時能看到。</p>
+      <label class="rng">強度 <input type="range" id="tol" min="10" max="90" value="42" aria-label="去背強度"></label>
+      <p class="mut">棋盤格代表透明。已去背的 PNG 會直接保留透明背景；炸彈的預覽會顯示紅框。照片先在你的瀏覽器處理好才上傳，只有持有遊玩連結的人在遊玩時能看到。</p>
+      <button id="go">確認上傳</button> <button id="cancel" class="sec">取消</button>
     </div>
     <button id="del" class="danger">刪除這個遊戲與所有照片</button>
   </section>
@@ -80,7 +93,7 @@ document.title=GAME_NAME;document.querySelectorAll('[data-name]').forEach(e=>e.t
 const API = 'https://photo-ninja.playyuan-game-api.workers.dev'; // ← 部署後端後，改成你的 Worker 網址
 const $ = s => document.querySelector(s);
 let key = new URLSearchParams(location.hash.slice(1)).get('key') || '';
-const say = (t, bad) => { const m = $('#msg'); m.textContent = ''; if (!t) return; const d = document.createElement('div'); d.className = bad ? 'warn' : 'card'; d.textContent = t; m.append(d); };
+let tt; const say = (t, bad) => { const m = $('#msg'); clearTimeout(tt); m.textContent = ''; if (!t) return; const d = document.createElement('div'); d.className = 'toast' + (bad ? ' bad' : ''); d.setAttribute('role', 'status'); d.textContent = t; m.append(d); tt = setTimeout(() => m.textContent = '', bad ? 9000 : 4000); };
 const api = (p, o = {}) => fetch(API + '/api/manage' + p, { ...o, headers: { Authorization: 'Bearer ' + key, ...(o.headers || {}) } });
 
 async function init() {
@@ -93,7 +106,11 @@ async function init() {
 async function refresh() { const r = await api('').catch(() => null); if (r && r.ok) show(await r.json()); }
 function show(d) {
   $('#newG').classList.add('hide'); $('#game').classList.remove('hide');
-  $('#gt').textContent = d.title || '我的遊戲'; $('#pl').value = d.playUrl; $('#ml').value = location.href; $('#try').href = d.playUrl;
+  $('#gt').textContent = d.title || '我的遊戲'; counts = { o: d.items.length, b: d.bombs.length }; const ready = d.items.length > 0;
+  $('#pl').value = ready ? d.playUrl : ''; $('#pl').placeholder = ready ? '' : '上傳至少 1 張物件照片後才會產生'; $('#cpl').disabled = !ready;
+  if (ready) $('#try').href = d.playUrl; else $('#try').removeAttribute('href'); $('#try').style.opacity = ready ? 1 : .4;
+  $('#plhint').textContent = ready ? '' : '遊玩連結會在你上傳至少 1 張物件照片後出現；之後新增、刪除照片，同一個連結會自動更新。';
+  $('#ml').value = location.href;
   $('#exp').textContent = '連結有效至 ' + new Date(d.expiresAt * 1000).toLocaleDateString('zh-TW') + '（有人遊玩或你修改，就會重新計 30 天）';
   grid(1, d.items, 10); grid(2, d.bombs, 2);
 }
@@ -133,14 +150,22 @@ $('#del').onclick = async () => {
   key = ''; history.replaceState(null, '', location.pathname + location.search); init(); say('已刪除。');
 };
 
-// 簡易去背（四角同色時，從邊緣向內移除背景）＋裁掉透明邊
-function proc(src) {
-  const w = src.width, h = src.height, px = new Uint8ClampedArray(src.getContext('2d').getImageData(0, 0, w, h).data);
-  if ($('#key').checked) {
-    const cs = [0, w - 1, (h - 1) * w, h * w - 1].map(i => i * 4), av = k => cs.reduce((s, i) => s + px[i + k], 0) / 4, R = av(0), G = av(1), B = av(2);
-    const near = i => { const j = i * 4, a = px[j] - R, b = px[j + 1] - G, c = px[j + 2] - B; return a * a + b * b + c * c < 1800; };
+// ---- 選照片 → 預覽（可簡易去背）→ 確認上傳 ----
+let counts = { o: 0, b: 0 }; const staged = [];
+function outline(img, color, r) {
+  const c = document.createElement('canvas'); c.width = img.width + r * 2; c.height = img.height + r * 2; const g = c.getContext('2d');
+  const t = document.createElement('canvas'); t.width = img.width; t.height = img.height; const h = t.getContext('2d');
+  h.drawImage(img, 0, 0); h.globalCompositeOperation = 'source-in'; h.fillStyle = color; h.fillRect(0, 0, t.width, t.height);
+  for (let a = 0; a < 28; a++) g.drawImage(t, r + Math.cos(a / 28 * 6.2832) * r, r + Math.sin(a / 28 * 6.2832) * r);
+  g.drawImage(img, r, r); return c;
+}
+function proc(src) { // 簡易去背（四角同色時從邊緣向內移除）＋裁掉透明邊
+  const w = src.width, h = src.height, px = new Uint8ClampedArray(src.getContext('2d').getImageData(0, 0, w, h).data), tried = $('#key').checked; let keyed = false;
+  if (tried) {
+    const d = +$('#tol').value, cs = [0, w - 1, (h - 1) * w, h * w - 1].map(i => i * 4), av = k => cs.reduce((s, i) => s + px[i + k], 0) / 4, R = av(0), G = av(1), B = av(2);
+    const near = i => { const j = i * 4, a = px[j] - R, b = px[j + 1] - G, c = px[j + 2] - B; return a * a + b * b + c * c < d * d; };
     if (cs.every(j => near(j / 4))) {
-      const vis = new Uint8Array(w * h), st = [];
+      keyed = true; const vis = new Uint8Array(w * h), st = [];
       for (let x = 0; x < w; x++) st.push(x, (h - 1) * w + x);
       for (let y = 0; y < h; y++) st.push(y * w, y * w + w - 1);
       while (st.length) {
@@ -151,29 +176,55 @@ function proc(src) {
   }
   let x0 = w, y0 = h, x1 = -1, y1 = -1;
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (px[(y * w + x) * 4 + 3] > 16) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-  if (x1 < 0) return src;
+  if (x1 < 0) return { c: src, keyed, tried };
   const t = document.createElement('canvas'); t.width = w; t.height = h; t.getContext('2d').putImageData(new ImageData(px, w, h), 0, 0);
   const o = document.createElement('canvas'); o.width = x1 - x0 + 1; o.height = y1 - y0 + 1;
-  o.getContext('2d').drawImage(t, x0, y0, o.width, o.height, 0, 0, o.width, o.height); return o;
+  o.getContext('2d').drawImage(t, x0, y0, o.width, o.height, 0, 0, o.width, o.height); return { c: o, keyed, tried };
 }
-async function addFiles(kind, files) {
-  say('上傳中，請稍候…');
-  for (const f of files) {
+function renderStage() {
+  const box = $('#sg'); box.textContent = ''; $('#stage').classList.toggle('hide', !staged.length);
+  staged.forEach((p, i) => {
+    const r = proc(p.src); p.out = r.c;
+    const w = document.createElement('div'), im = new Image(), x = document.createElement('button'), tag = document.createElement('div'), st = document.createElement('div');
+    w.className = 'tn big'; im.alt = '';
+    im.src = (p.kind === 'b' ? outline(r.c, '#b8344a', Math.round(Math.max(r.c.width, r.c.height) * .09)) : r.c).toDataURL();
+    tag.className = 'tag'; tag.textContent = (p.kind === 'b' ? '炸彈' : '物件') + (r.tried ? (r.keyed ? '・已去背' : '・未去背') : '');
+    st.className = 'st'; p.st = st; x.textContent = '×'; x.setAttribute('aria-label', '移除'); x.onclick = () => { staged.splice(i, 1); renderStage(); };
+    w.append(im, tag, st, x); box.append(w);
+  });
+}
+async function stage(kind, files) {
+  const lim = { o: 10, b: 2 }[kind], room = lim - counts[kind] - staged.filter(p => p.kind === kind).length;
+  if (room <= 0) return say('已達上限。', 1);
+  for (const f of files.slice(0, room)) {
     try {
       const bm = await createImageBitmap(f), s = Math.min(1, 512 / Math.max(bm.width, bm.height)), c = document.createElement('canvas');
       c.width = Math.max(1, Math.round(bm.width * s)); c.height = Math.max(1, Math.round(bm.height * s));
-      c.getContext('2d').drawImage(bm, 0, 0, c.width, c.height);
-      const blob = await new Promise(r => proc(c).toBlob(r, 'image/png'));
-      const r = await api('/photos?kind=' + kind, { method: 'POST', body: blob, headers: { 'Content-Type': 'image/png' } });
-      if (r.status === 409) { say('已達上限。', 1); break; }
-      if (!r.ok) say('有一張照片上傳失敗（可能太大）。', 1);
-    } catch (e) { say('有一張照片無法處理。', 1); }
+      c.getContext('2d').drawImage(bm, 0, 0, c.width, c.height); staged.push({ kind, src: c });
+    } catch (e) { say('有一張照片無法讀取。', 1); }
+  }
+  if (files.length > room) say('已達上限，只加入前 ' + room + ' 張。', 1);
+  renderStage(); $('#stage').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+$('#go').onclick = async () => {
+  $('#go').disabled = true; let ok = 0, bad = 0;
+  for (const p of [...staged]) {
+    p.st.textContent = '上傳中…';
+    try {
+      const blob = await new Promise(r => p.out.toBlob(r, 'image/png'));
+      const r = await api('/photos?kind=' + p.kind, { method: 'POST', body: blob, headers: { 'Content-Type': 'image/png' } });
+      if (r.ok) { ok++; p.done = 1; p.st.textContent = '✓ 完成'; } else { bad++; p.st.textContent = r.status === 409 ? '✗ 已達上限' : r.status === 413 ? '✗ 檔案太大' : '✗ 失敗'; }
+    } catch (e) { bad++; p.st.textContent = '✗ 失敗'; }
   }
   await refresh();
-  if ($('#msg').textContent === '上傳中，請稍候…') say('');
-}
-$('#f1').onchange = e => { addFiles('o', [...e.target.files]); e.target.value = ''; };
-$('#f2').onchange = e => { addFiles('b', [...e.target.files]); e.target.value = ''; };
+  for (let i = staged.length - 1; i >= 0; i--) if (staged[i].done) staged.splice(i, 1);
+  $('#go').disabled = false; renderStage();
+  say(bad ? `已上傳 ${ok} 張，${bad} 張失敗（留在預覽區，可重試）。` : `已上傳 ${ok} 張。`, !!bad);
+};
+$('#cancel').onclick = () => { staged.length = 0; renderStage(); };
+$('#key').onchange = renderStage; $('#tol').onchange = renderStage;
+$('#f1').onchange = e => { stage('o', [...e.target.files]); e.target.value = ''; };
+$('#f2').onchange = e => { stage('b', [...e.target.files]); e.target.value = ''; };
 init();
 </script>
 </body>

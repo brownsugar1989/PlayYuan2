@@ -135,9 +135,15 @@ for (const [b, i] of [['#cpl', '#pl'], ['#cml', '#ml']]) $(b).onclick = async ()
 
 $('#make').onclick = async () => {
   $('#make').disabled = true;
-  const r = await fetch(API + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: $('#title').value, email: $('#email').value }) }).catch(() => null);
+  const r = await fetch(API + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: $('#title').value, email: $('#email').value }) }).catch(e => (console.error('建立失敗：連線或 CORS 錯誤', e), null));
   $('#make').disabled = false;
-  if (!r || !r.ok) return say('建立失敗，請稍後再試。', 1);
+  if (!r) return say('建立失敗：無法連線到伺服器（若後端正常，多半是 Worker 的 ALLOWED_ORIGIN 沒設成 ' + location.origin + '）。', 1);
+  if (!r.ok) {
+    const e = (await r.json().catch(() => ({}))).error || '';
+    const why = { missing_secret: '後端尚未設定 SIGN_SECRET', captcha: '人機驗證失敗', server: '伺服器錯誤（請確認 D1 資料表已用 schema.sql 建立）', not_found: '找不到 API（Worker 網址可能不對）' }[e] || '錯誤代碼 ' + r.status;
+    console.error('建立失敗', r.status, e);
+    return say('建立失敗：' + why + '。', 1);
+  }
   const d = await r.json(); key = d.key;
   history.replaceState(null, '', '#key=' + key);
   await init(); say('建立完成！請先複製管理連結收藏起來，再上傳照片。');

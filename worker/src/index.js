@@ -11,7 +11,8 @@ async function hmac(env, msg) {
   return b64u(await crypto.subtle.sign('HMAC', k, enc.encode(msg)));
 }
 // 只允許建立者網頁的來源跨網域呼叫管理 API
-const cors = (env, req) => { const o = req.headers.get('Origin'); return o && o === env.ALLOWED_ORIGIN ? { 'Access-Control-Allow-Origin': o, 'Access-Control-Allow-Headers': 'Authorization,Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', Vary: 'Origin' } : {}; };
+const originOf = u => { try { return new URL(u).origin; } catch (e) { return ''; } }; // 容許 ALLOWED_ORIGIN 寫成含路徑或結尾斜線的網址
+const cors = (env, req) => { const o = req.headers.get('Origin'); return o && o === originOf(env.ALLOWED_ORIGIN) ? { 'Access-Control-Allow-Origin': o, 'Access-Control-Allow-Headers': 'Authorization,Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', Vary: 'Origin' } : {}; };
 const json = (env, req, data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...cors(env, req) } });
 
 export default {

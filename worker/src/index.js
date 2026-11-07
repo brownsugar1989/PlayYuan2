@@ -21,7 +21,7 @@ export default {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(env, req) });
     try {
       if (!env.SIGN_SECRET && (p.startsWith('/api/') || p.startsWith('/img/'))) return json(env, req, { error: 'missing_secret' }, 500); // 尚未設定 SIGN_SECRET
-      if (p.startsWith('/g/')) return env.ASSETS.fetch(new Request(url.origin + '/play.html', req)); // 遊玩頁
+      if (p.startsWith('/g/')) return playPage(env, url); // 遊玩頁
       if (p === '/api/games' && req.method === 'POST') return create(req, env);
       let m;
       if ((m = p.match(/^\/api\/play\/([\w-]{16,})$/))) return play(req, env, m[1]);
@@ -33,6 +33,14 @@ export default {
   },
   async scheduled(ev, env, ctx) { ctx.waitUntil(cleanup(env)); },
 };
+
+// 靜態資源預設會把 /play.html 轉址到 /play；若把轉址直接回給瀏覽器，網址會變成 /play、遊戲代碼就不見了，所以在這裡內部跟隨轉址
+async function playPage(env, url) {
+  let r = await env.ASSETS.fetch(new Request(url.origin + '/play.html'));
+  for (let i = 0; i < 3 && r.status >= 300 && r.status < 400 && r.headers.get('Location'); i++)
+    r = await env.ASSETS.fetch(new Request(new URL(r.headers.get('Location'), url.origin)));
+  return r;
+}
 
 async function create(req, env) {
   const b = await req.json().catch(() => ({}));

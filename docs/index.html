@@ -213,8 +213,8 @@ $('#go').onclick = async () => {
     try {
       const blob = await new Promise(r => p.out.toBlob(r, 'image/png'));
       const r = await api('/photos?kind=' + p.kind, { method: 'POST', body: blob, headers: { 'Content-Type': 'image/png' } });
-      if (r.ok) { ok++; p.done = 1; p.st.textContent = '✓ 完成'; } else { bad++; p.st.textContent = r.status === 409 ? '✗ 已達上限' : r.status === 413 ? '✗ 檔案太大' : '✗ 失敗'; }
-    } catch (e) { bad++; p.st.textContent = '✗ 失敗'; }
+      if (r.ok) { ok++; p.done = 1; p.st.textContent = '✓ 完成'; } else { bad++; let code = ''; try { code = (await r.json()).error || ''; } catch (e) {} p.st.textContent = r.status === 409 ? '✗ 已達上限' : r.status === 413 ? '✗ 檔案太大' : '✗ 失敗 ' + r.status + (code ? ' ' + code : ''); }
+    } catch (e) { bad++; p.st.textContent = '✗ 無法連線'; }
   }
   await refresh();
   for (let i = staged.length - 1; i >= 0; i--) if (staged[i].done) staged.splice(i, 1);

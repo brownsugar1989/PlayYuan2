@@ -19,6 +19,7 @@ export default {
     const url = new URL(req.url), p = url.pathname;
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(env, req) });
     try {
+      if (!env.SIGN_SECRET && (p.startsWith('/api/') || p.startsWith('/img/'))) return json(env, req, { error: 'missing_secret' }, 500); // 尚未設定 SIGN_SECRET
       if (p.startsWith('/g/')) return env.ASSETS.fetch(new Request(url.origin + '/play.html', req)); // 遊玩頁
       if (p === '/api/games' && req.method === 'POST') return create(req, env);
       let m;
@@ -27,7 +28,7 @@ export default {
       if (p.startsWith('/api/manage')) return manage(req, env, url, p);
       if (p.startsWith('/api/')) return json(env, req, { error: 'not_found' }, 404);
       return env.ASSETS.fetch(req);
-    } catch (e) { return json(env, req, { error: 'server' }, 500); }
+    } catch (e) { console.error('worker error', (e && e.stack) || e); return json(env, req, { error: 'server' }, 500); }
   },
   async scheduled(ev, env, ctx) { ctx.waitUntil(cleanup(env)); },
 };
@@ -40,7 +41,7 @@ async function create(req, env) {
   await env.DB.prepare('INSERT INTO games(play_id,manage_hash,title,email,created_at,expires_at) VALUES(?,?,?,?,?,?)')
     .bind(playId, await sha(key), String(b.title || '').slice(0, 60), email, t, t + TTL).run();
   const playUrl = `${env.PUBLIC_PLAY_BASE}/g/${playId}`, manageUrl = `${env.CREATOR_URL}#key=${key}`;
-  if (email) await mail(env, email, '你的照片切切樂連結', `遊玩連結：${playUrl}\n管理連結：${manageUrl}\n連結在最後一次遊玩或修改後 30 天失效。`);
+  if (email) await mail(env, email, `你的${env.GAME_NAME || '面目全非'}連結`, `遊玩連結：${playUrl}\n管理連結：${manageUrl}\n連結在最後一次遊玩或修改後 30 天失效。`);
   return json(env, req, { playUrl, manageUrl, key, expiresAt: t + TTL });
 }
 
@@ -121,7 +122,7 @@ async function cleanup(env) { // 每日排程：刪除過期遊戲、到期前 3
   for (const g of old) await deleteGame(env, g.play_id);
   const { results: soon } = await env.DB.prepare('SELECT play_id,email FROM games WHERE email IS NOT NULL AND reminded=0 AND expires_at BETWEEN ? AND ?').bind(t, t + 3 * DAY).all();
   for (const g of soon) {
-    await mail(env, g.email, '你的照片切切樂連結即將失效', '遊戲連結將在 3 天內失效。有人遊玩或你到管理頁按「延長」，就會重新計 30 天；否則照片與設定會被刪除。');
+    await mail(env, g.email, `你的${env.GAME_NAME || '面目全非'}連結即將失效`, '遊戲連結將在 3 天內失效。有人遊玩或你到管理頁按「延長」，就會重新計 30 天；否則照片與設定會被刪除。');
     await env.DB.prepare('UPDATE games SET reminded=1 WHERE play_id=?').bind(g.play_id).run();
   }
 }

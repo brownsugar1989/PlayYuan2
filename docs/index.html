@@ -36,6 +36,18 @@ button:focus-visible,.btn:focus-within,input:focus-visible{outline:3px solid var
 .rng{display:flex;align-items:center;gap:10px;margin:8px 0}.rng input{flex:1}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);max-width:92vw;background:var(--card);border:2px solid var(--btn);border-radius:12px;padding:10px 16px;z-index:9;box-shadow:0 4px 0 var(--edge)}
 .toast.bad{border-color:var(--red);background:#5a2b2f}
+select{width:100%;padding:9px 12px;border-radius:10px;border:2px solid var(--edge);background:var(--bg);color:var(--ink);font:inherit}
+progress{width:100%;height:10px;accent-color:var(--btn)}
+#aibar{margin:0 0 12px}
+.tn .st{pointer-events:none}
+.tn button.eb{top:auto;right:auto;left:4px;bottom:22px;width:auto;height:auto;border-radius:999px;padding:1px 9px;font-size:12px;line-height:1.5;box-shadow:0 2px 0 var(--edge)}
+#ed{position:fixed;inset:0;z-index:20;background:#000c;display:flex;align-items:center;justify-content:center;padding:12px}
+#ed.hide{display:none}
+.edbox{background:var(--card);border:2px solid var(--edge);border-radius:16px;padding:14px;width:min(560px,100%);max-height:100%;overflow:auto}
+.edwrap{margin:10px 0;background:repeating-conic-gradient(#ffffff1f 0 25%,#0000 0 50%) 0 0/16px 16px;border-radius:12px;display:flex;justify-content:center}
+#edc{max-width:100%;max-height:52vh;touch-action:none;cursor:crosshair}
+.edtools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+.edtools .rng{flex:1;min-width:150px}
 </style>
 </head>
 <body>
@@ -79,14 +91,31 @@ button:focus-visible,.btn:focus-within,input:focus-visible{outline:3px solid var
     <div class="card hide" id="stage">
       <h2>預覽（確認後才會上傳）</h2>
       <div id="sg" class="grid"></div>
-      <label style="margin:0"><input type="checkbox" id="key"> 簡易去背（四個角落同色的純色背景才有效）</label>
-      <label class="rng">強度 <input type="range" id="tol" min="10" max="90" value="42" aria-label="去背強度"></label>
-      <p class="mut">棋盤格代表透明。已去背的 PNG 會直接保留透明背景；炸彈的預覽會顯示紅框。照片先在你的瀏覽器處理好才上傳，只有持有遊玩連結的人在遊玩時能看到。</p>
+      <div id="aibar" class="hide"><div class="mut" id="aitxt"></div><progress id="aip" max="100"></progress></div>
+      <label for="mode" style="margin-top:0">去背方式</label>
+      <select id="mode">
+        <option value="ai" selected>AI 自動去背（人像效果最好）</option>
+        <option value="key">簡易去背（四個角落同色的純色背景）</option>
+        <option value="none">不去背</option>
+      </select>
+      <div id="tolbox" class="hide"><label class="rng">強度 <input type="range" id="tol" min="10" max="90" value="42" aria-label="去背強度"></label></div>
+      <p class="mut">AI 去背在你的瀏覽器裡執行，照片不會被送去別處；第一次使用要下載約數十 MB 的模型，之後會存在瀏覽器。AI 模型針對人像訓練，物品或動物效果可能較差，可按每張照片的「修飾」用橡皮擦／還原筆刷手動調整。棋盤格代表透明；已有透明背景的 PNG 會直接保留。炸彈的預覽會顯示紅框。</p>
       <button id="go">確認上傳</button> <button id="cancel" class="sec">取消</button>
     </div>
     <button id="del" class="danger">刪除這個遊戲與所有照片</button>
   </section>
 </main>
+<div id="ed" class="hide" role="dialog" aria-modal="true" aria-label="手動修飾">
+  <div class="edbox">
+    <div class="mut">用「橡皮擦」擦掉多餘的背景，用「還原」把被誤擦的部分補回來（淡淡的部分可還原）。</div>
+    <div class="edwrap"><canvas id="edc"></canvas></div>
+    <div class="edtools">
+      <button id="tE">橡皮擦</button><button id="tR" class="sec">還原</button>
+      <label class="rng" style="margin:0">筆刷 <input type="range" id="bs" min="4" max="80" value="24" aria-label="筆刷大小"></label>
+    </div>
+    <div class="edtools"><button id="eu" class="sec">復原上一筆</button><button id="er" class="sec">回到自動結果</button><span style="flex:1"></span><button id="ec" class="sec">取消</button><button id="ok">完成</button></div>
+  </div>
+</div>
 <script>
 const GAME_NAME='面目全非'; // 遊戲名稱（暫定，要改只改這一行）
 document.title=GAME_NAME;document.querySelectorAll('[data-name]').forEach(e=>e.textContent=GAME_NAME);
@@ -156,8 +185,12 @@ $('#del').onclick = async () => {
   key = ''; history.replaceState(null, '', location.pathname + location.search); init(); say('已刪除。');
 };
 
-// ---- 選照片 → 預覽（可簡易去背）→ 確認上傳 ----
-let counts = { o: 0, b: 0 }; const staged = [];
+// ---- 選照片 → 去背（AI／簡易）→ 手動修飾 → 預覽 → 確認上傳 ----
+let counts = { o: 0, b: 0 }; const staged = []; let uploading = false, aiBusy = false;
+// 瀏覽器內 AI 去背：Transformers.js + MODNet（Apache-2.0）。照片不會上傳，只有模型檔從網路下載（之後存在瀏覽器快取）。
+// MODNet 是人像去背模型；要換模型只需改這裡。
+const AI = { ver: '3.8.1', model: 'Xenova/modnet' };
+
 function outline(img, color, r) {
   const c = document.createElement('canvas'); c.width = img.width + r * 2; c.height = img.height + r * 2; const g = c.getContext('2d');
   const t = document.createElement('canvas'); t.width = img.width; t.height = img.height; const h = t.getContext('2d');
@@ -165,55 +198,174 @@ function outline(img, color, r) {
   for (let a = 0; a < 28; a++) g.drawImage(t, r + Math.cos(a / 28 * 6.2832) * r, r + Math.sin(a / 28 * 6.2832) * r);
   g.drawImage(img, r, r); return c;
 }
-function proc(src) { // 簡易去背（四角同色時從邊緣向內移除）＋裁掉透明邊
-  const w = src.width, h = src.height, px = new Uint8ClampedArray(src.getContext('2d').getImageData(0, 0, w, h).data), tried = $('#key').checked; let keyed = false;
-  if (tried) {
-    const d = +$('#tol').value, cs = [0, w - 1, (h - 1) * w, h * w - 1].map(i => i * 4), av = k => cs.reduce((s, i) => s + px[i + k], 0) / 4, R = av(0), G = av(1), B = av(2);
-    const near = i => { const j = i * 4, a = px[j] - R, b = px[j + 1] - G, c = px[j + 2] - B; return a * a + b * b + c * c < d * d; };
-    if (cs.every(j => near(j / 4))) {
-      keyed = true; const vis = new Uint8Array(w * h), st = [];
-      for (let x = 0; x < w; x++) st.push(x, (h - 1) * w + x);
-      for (let y = 0; y < h; y++) st.push(y * w, y * w + w - 1);
-      while (st.length) {
-        const i = st.pop(); if (vis[i] || !near(i)) continue; vis[i] = 1; px[i * 4 + 3] = 0; const x = i % w;
-        if (x > 0) st.push(i - 1); if (x < w - 1) st.push(i + 1); if (i >= w) st.push(i - w); if (i < w * (h - 1)) st.push(i + w);
-      }
-    }
+const applyMask = (px, m) => { for (let i = 0; i < m.length; i++) if (m[i] < px[i * 4 + 3]) px[i * 4 + 3] = m[i]; };
+function keyOut(px, w, h) { // 簡易去背：四角同色時，從邊緣向內移除背景；回傳是否生效
+  const d = +$('#tol').value, cs = [0, w - 1, (h - 1) * w, h * w - 1].map(i => i * 4), av = k => cs.reduce((s, i) => s + px[i + k], 0) / 4, R = av(0), G = av(1), B = av(2);
+  const near = i => { const j = i * 4, a = px[j] - R, b = px[j + 1] - G, c = px[j + 2] - B; return a * a + b * b + c * c < d * d; };
+  if (!cs.every(j => near(j / 4))) return false;
+  const vis = new Uint8Array(w * h), st = [];
+  for (let x = 0; x < w; x++) st.push(x, (h - 1) * w + x);
+  for (let y = 0; y < h; y++) st.push(y * w, y * w + w - 1);
+  while (st.length) {
+    const i = st.pop(); if (vis[i] || !near(i)) continue; vis[i] = 1; px[i * 4 + 3] = 0; const x = i % w;
+    if (x > 0) st.push(i - 1); if (x < w - 1) st.push(i + 1); if (i >= w) st.push(i - w); if (i < w * (h - 1)) st.push(i + w);
   }
+  return true;
+}
+function autoPx(p) { // 不含手動修飾的自動結果
+  const w = p.src.width, h = p.src.height, px = new Uint8ClampedArray(p.src.getContext('2d').getImageData(0, 0, w, h).data), mode = $('#mode').value; let tag = '';
+  if (p.hasAlpha) tag = '透明背景';
+  else if (mode === 'ai') { if (p.ai) { applyMask(px, p.ai); tag = 'AI 去背'; } else tag = p.aiState === 'fail' ? '去背失敗' : '等待去背'; }
+  else if (mode === 'key') tag = keyOut(px, w, h) ? '簡易去背' : '未去背';
+  return { px, tag };
+}
+function proc(p) { // 套用去背／修飾結果，並裁掉透明邊
+  const w = p.src.width, h = p.src.height; let { px, tag } = autoPx(p);
+  if (p.manual) { px = new Uint8ClampedArray(p.src.getContext('2d').getImageData(0, 0, w, h).data); applyMask(px, p.manual); tag = '已修飾'; }
   let x0 = w, y0 = h, x1 = -1, y1 = -1;
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (px[(y * w + x) * 4 + 3] > 16) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-  if (x1 < 0) return { c: src, keyed, tried };
+  if (x1 < 0) return { c: p.src, tag: '沒找到主體' }; // 全被去掉 → 退回原圖
   const t = document.createElement('canvas'); t.width = w; t.height = h; t.getContext('2d').putImageData(new ImageData(px, w, h), 0, 0);
   const o = document.createElement('canvas'); o.width = x1 - x0 + 1; o.height = y1 - y0 + 1;
-  o.getContext('2d').drawImage(t, x0, y0, o.width, o.height, 0, 0, o.width, o.height); return { c: o, keyed, tried };
+  o.getContext('2d').drawImage(t, x0, y0, o.width, o.height, 0, 0, o.width, o.height); return { c: o, tag };
 }
+
+// ---- AI 去背 ----
+function bar(txt, frac) { // 進度列；frac 省略 = 不確定進度；沒有文字 = 隱藏
+  const b = $('#aibar'); if (!txt) return b.classList.add('hide');
+  b.classList.remove('hide'); $('#aitxt').textContent = txt; const p = $('#aip'); if (frac == null) p.removeAttribute('value'); else p.value = frac * 100;
+}
+let segP = null;
+function getSeg() { // 第一次使用才載入程式庫與模型
+  if (!segP) segP = (async () => {
+    bar('準備 AI 去背…（第一次需下載模型，之後會存在瀏覽器裡）');
+    const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@' + AI.ver);
+    const files = {};
+    return await pipeline('background-removal', AI.model, { dtype: 'fp32', progress_callback: e => {
+      if (e.status === 'progress' && e.total) {
+        files[e.file] = [e.loaded, e.total]; let lo = 0, to = 0; for (const v of Object.values(files)) { lo += v[0]; to += v[1]; }
+        bar('下載 AI 去背模型… ' + Math.round(lo / to * 100) + '%（只需下載一次）', lo / to);
+      }
+    } });
+  })().catch(e => { segP = null; throw e; });
+  return segP;
+}
+function alphaOf(img, w, h) { // 模型輸出（RGBA 或單通道遮罩）→ 與原圖同尺寸的 alpha 遮罩
+  const n = img.width * img.height, ch = img.channels || Math.round(img.data.length / n), id = new ImageData(img.width, img.height);
+  for (let i = 0; i < n; i++) id.data[i * 4 + 3] = ch === 4 ? img.data[i * 4 + 3] : img.data[i * ch];
+  const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(id, 0, 0);
+  const o = document.createElement('canvas'); o.width = w; o.height = h; const g = o.getContext('2d'); g.drawImage(c, 0, 0, w, h);
+  const r = g.getImageData(0, 0, w, h).data, m = new Uint8ClampedArray(w * h);
+  for (let i = 0; i < m.length; i++) m[i] = r[i * 4 + 3] < 20 ? 0 : r[i * 4 + 3]; // 去掉零星的淡雜點
+  return m;
+}
+async function runAI(seg, p) {
+  const blob = await new Promise(r => p.src.toBlob(r, 'image/png')), url = URL.createObjectURL(blob);
+  try { const out = await seg(url); return alphaOf(Array.isArray(out) ? out[0] : out, p.src.width, p.src.height); }
+  finally { URL.revokeObjectURL(url); }
+}
+const needAI = p => !p.hasAlpha && !p.manual && !p.ai && p.aiState !== 'fail';
+async function ensureAI() { // 依序處理還沒去背的照片（一次一張，省記憶體）
+  if (aiBusy || $('#mode').value !== 'ai' || !staged.some(needAI)) return;
+  aiBusy = true; updateGo();
+  try {
+    let seg;
+    try { seg = await getSeg(); }
+    catch (e) { console.error(e); for (const q of staged) if (needAI(q)) q.aiState = 'fail'; return say('AI 去背載入失敗（網路或瀏覽器不支援）。可改用「簡易去背」，或按「修飾」手動去背。', 1); }
+    for (let p; $('#mode').value === 'ai' && (p = staged.find(needAI));) {
+      p.aiState = 'run'; bar('AI 去背中…（剩 ' + staged.filter(needAI).length + ' 張）'); renderStage();
+      try { p.ai = await runAI(seg, p); p.aiState = 'ok'; } catch (e) { console.error(e); p.aiState = 'fail'; say('有一張照片去背失敗，可按「修飾」手動處理。', 1); }
+    }
+  } finally { aiBusy = false; bar(); renderStage(); }
+}
+function updateGo() { $('#go').disabled = uploading || aiBusy || !staged.length || ($('#mode').value === 'ai' && staged.some(needAI)); }
+
 function renderStage() {
   const box = $('#sg'); box.textContent = ''; $('#stage').classList.toggle('hide', !staged.length);
   staged.forEach((p, i) => {
-    const r = proc(p.src); p.out = r.c;
-    const w = document.createElement('div'), im = new Image(), x = document.createElement('button'), tag = document.createElement('div'), st = document.createElement('div');
+    const r = proc(p); p.out = r.c;
+    const w = document.createElement('div'), im = new Image(), x = document.createElement('button'), eb = document.createElement('button'), tag = document.createElement('div'), st = document.createElement('div');
     w.className = 'tn big'; im.alt = '';
     im.src = (p.kind === 'b' ? outline(r.c, '#b8344a', Math.round(Math.max(r.c.width, r.c.height) * .09)) : r.c).toDataURL();
-    tag.className = 'tag'; tag.textContent = (p.kind === 'b' ? '炸彈' : '物件') + (r.tried ? (r.keyed ? '・已去背' : '・未去背') : '');
-    st.className = 'st'; p.st = st; x.textContent = '×'; x.setAttribute('aria-label', '移除'); x.onclick = () => { staged.splice(i, 1); renderStage(); };
-    w.append(im, tag, st, x); box.append(w);
+    tag.className = 'tag'; tag.textContent = (p.kind === 'b' ? '炸彈' : '物件') + (r.tag ? '・' + r.tag : '');
+    st.className = 'st'; st.textContent = p.aiState === 'run' ? '去背中…' : ''; p.st = st;
+    x.textContent = '×'; x.setAttribute('aria-label', '移除'); x.onclick = () => { staged.splice(i, 1); renderStage(); };
+    eb.textContent = '修飾'; eb.className = 'eb'; eb.setAttribute('aria-label', '手動修飾這張照片'); eb.onclick = () => openEditor(p);
+    w.append(im, tag, st, x, eb); box.append(w);
   });
+  updateGo();
 }
 async function stage(kind, files) {
+  if (uploading) return say('上傳中，請稍後再加照片。', 1);
   const lim = { o: 10, b: 2 }[kind], room = lim - counts[kind] - staged.filter(p => p.kind === kind).length;
   if (room <= 0) return say('已達上限。', 1);
   for (const f of files.slice(0, room)) {
     try {
       const bm = await createImageBitmap(f), s = Math.min(1, 512 / Math.max(bm.width, bm.height)), c = document.createElement('canvas');
       c.width = Math.max(1, Math.round(bm.width * s)); c.height = Math.max(1, Math.round(bm.height * s));
-      c.getContext('2d').drawImage(bm, 0, 0, c.width, c.height); staged.push({ kind, src: c });
+      c.getContext('2d').drawImage(bm, 0, 0, c.width, c.height);
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let t = 0; for (let i = 3; i < d.length; i += 4) if (d[i] < 250) t++;
+      staged.push({ kind, src: c, hasAlpha: t > d.length / 4 * .02, ai: null, manual: null, aiState: '' }); // 已有透明背景的 PNG 不再去背
     } catch (e) { say('有一張照片無法讀取。', 1); }
   }
   if (files.length > room) say('已達上限，只加入前 ' + room + ' 張。', 1);
-  renderStage(); $('#stage').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  renderStage(); $('#stage').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); ensureAI();
 }
+
+// ---- 手動修飾：橡皮擦／還原筆刷 ----
+let ed = null;
+function curAlpha(p) { const { px } = autoPx(p), m = new Uint8ClampedArray(px.length / 4); for (let i = 0; i < m.length; i++) m[i] = px[i * 4 + 3]; return m; }
+function setMask(m) {
+  const id = new ImageData(ed.w, ed.h); for (let i = 0; i < m.length; i++) { id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = 255; id.data[i * 4 + 3] = m[i]; }
+  ed.mc.getContext('2d').putImageData(id, 0, 0);
+}
+function compose() { // 淡淡的原圖（可還原的部分）＋目前的去背結果
+  const { w, h, p } = ed, g = $('#edc').getContext('2d'), t = ed.cut.getContext('2d');
+  g.clearRect(0, 0, w, h); g.globalAlpha = .3; g.drawImage(p.src, 0, 0); g.globalAlpha = 1;
+  t.globalCompositeOperation = 'source-over'; t.clearRect(0, 0, w, h); t.drawImage(p.src, 0, 0); t.globalCompositeOperation = 'destination-in'; t.drawImage(ed.mc, 0, 0);
+  g.drawImage(ed.cut, 0, 0);
+}
+function setTool(t) { ed.tool = t; $('#tE').classList.toggle('sec', t !== 'erase'); $('#tR').classList.toggle('sec', t !== 'keep'); }
+function openEditor(p) {
+  const w = p.src.width, h = p.src.height, mk = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+  ed = { p, w, h, mc: mk(), cut: mk(), tool: 'erase', size: +$('#bs').value, undo: [], drawing: false, last: null, changed: false, reset: false };
+  setMask(p.manual || curAlpha(p)); const v = $('#edc'); v.width = w; v.height = h;
+  $('#ed').classList.remove('hide'); document.body.style.overflow = 'hidden'; setTool('erase'); compose(); $('#ok').focus();
+}
+function closeEd() { $('#ed').classList.add('hide'); document.body.style.overflow = ''; ed = null; }
+function stroke(a, b) {
+  const g = ed.mc.getContext('2d'); g.save();
+  g.globalCompositeOperation = ed.tool === 'erase' ? 'destination-out' : 'source-over'; g.strokeStyle = g.fillStyle = '#fff';
+  g.lineCap = 'round'; g.lineWidth = ed.size; g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+  g.beginPath(); g.arc(b.x, b.y, ed.size / 2, 0, 6.2832); g.fill(); g.restore();
+}
+(() => {
+  const v = $('#edc'), pos = e => { const r = v.getBoundingClientRect(); return { x: (e.clientX - r.left) * v.width / r.width, y: (e.clientY - r.top) * v.height / r.height }; };
+  v.onpointerdown = e => {
+    if (!ed) return; e.preventDefault(); v.setPointerCapture(e.pointerId);
+    ed.undo.push(ed.mc.getContext('2d').getImageData(0, 0, ed.w, ed.h)); if (ed.undo.length > 15) ed.undo.shift();
+    ed.drawing = true; ed.changed = true; ed.reset = false; ed.last = pos(e); stroke(ed.last, ed.last); compose();
+  };
+  v.onpointermove = e => { if (!ed || !ed.drawing) return; const q = pos(e); stroke(ed.last, q); ed.last = q; compose(); };
+  v.onpointerup = v.onpointercancel = () => { if (ed) ed.drawing = false; };
+})();
+$('#tE').onclick = () => ed && setTool('erase'); $('#tR').onclick = () => ed && setTool('keep');
+$('#bs').oninput = () => { if (ed) ed.size = +$('#bs').value; };
+$('#eu').onclick = () => { if (ed && ed.undo.length) { ed.mc.getContext('2d').putImageData(ed.undo.pop(), 0, 0); compose(); } };
+$('#er').onclick = () => { // 回到自動去背的結果
+  if (!ed) return; ed.undo.push(ed.mc.getContext('2d').getImageData(0, 0, ed.w, ed.h)); setMask(curAlpha(ed.p)); ed.changed = true; ed.reset = true; compose();
+};
+$('#ok').onclick = () => {
+  if (!ed) return; const p = ed.p;
+  if (ed.reset) p.manual = null;
+  else if (ed.changed) { const d = ed.mc.getContext('2d').getImageData(0, 0, ed.w, ed.h).data, m = new Uint8ClampedArray(ed.w * ed.h); for (let i = 0; i < m.length; i++) m[i] = d[i * 4 + 3]; p.manual = m; }
+  closeEd(); renderStage();
+};
+$('#ec').onclick = closeEd;
+addEventListener('keydown', e => { if (e.key === 'Escape' && ed) closeEd(); });
+
 $('#go').onclick = async () => {
-  $('#go').disabled = true; let ok = 0, bad = 0;
+  uploading = true; updateGo(); let ok = 0, bad = 0;
   for (const p of [...staged]) {
     p.st.textContent = '上傳中…';
     try {
@@ -224,11 +376,16 @@ $('#go').onclick = async () => {
   }
   await refresh();
   for (let i = staged.length - 1; i >= 0; i--) if (staged[i].done) staged.splice(i, 1);
-  $('#go').disabled = false; renderStage();
+  uploading = false; renderStage();
   say(bad ? `已上傳 ${ok} 張，${bad} 張失敗（留在預覽區，可重試）。` : `已上傳 ${ok} 張。`, !!bad);
 };
 $('#cancel').onclick = () => { staged.length = 0; renderStage(); };
-$('#key').onchange = renderStage; $('#tol').onchange = renderStage;
+$('#mode').onchange = () => {
+  $('#tolbox').classList.toggle('hide', $('#mode').value !== 'key');
+  for (const p of staged) if (p.aiState === 'fail') p.aiState = ''; // 切回 AI 時重試失敗的
+  renderStage(); ensureAI();
+};
+$('#tol').onchange = renderStage;
 $('#f1').onchange = e => { stage('o', [...e.target.files]); e.target.value = ''; };
 $('#f2').onchange = e => { stage('b', [...e.target.files]); e.target.value = ''; };
 init();
